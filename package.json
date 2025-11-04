@@ -1,0 +1,11 @@
+{
+  "name": "sports-companion",
+  "version": "1.0.0",
+  "description": "Sports Companion Application",
+  "scripts": {
+    "start": "browser-sync start --server --files '*.html, *.css, *.js'"
+  },
+  "devDependencies": {
+    "browser-sync": "^2.29.3"
+  }
+}
