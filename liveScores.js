@@ -1,293 +1,274 @@
-/**
- * TODO: Core Engine (Aanya)
- * - Implement WebSocket connection for real-time updates
- * - Handle connection states and reconnection logic
- * - Optimize data flow and state updates
- */
-
-/**
- * TODO: API & Testing (Niki)
- * - Implement proper API service for live scores
- * - Add request/response interceptors
- * - Write unit tests for data transformation
- * - Add error handling for different API responses
- */
-
-/**
- * TODO: Dashboard & Presentation (Rohan)
- * - Design scoreboard component
- * - Implement match timeline view
- * - Add match details modal
- * - Create responsive match cards
- */
-
-/**
- * TODO: Design & Animation (Advik)
- * - Add smooth score updates animation
- * - Implement loading states for live matches
- * - Design match status indicators
- * - Add micro-interactions for user actions
- */
-
-/**
- * TODO: Data & Alerts (Nishaad)
- * - Set up score change detection
- * - Implement push notifications for goals/scores
- * - Add match event logging
- * - Set up data caching for offline support
- */
-
 import { API_CONFIG, ERROR_MESSAGES, DEFAULT_MATCHES } from './config.js';
 import { showNotification } from './notifications.js';
 
-/**
- * Fetches live scores from the sports data API
- * @param {string} sport - The sport to get scores for (e.g., 'nba', 'nfl')
- * @returns {Promise<Array>} - Array of match objects
- */
+const CACHE_TTL_MS = 60 * 1000; // 1 minute cache TTL
+
+function cacheKeyFor(sport) {
+  return `liveScores_cache_${sport}`;
+}
+
+function readCache(sport) {
+  try {
+    const raw = localStorage.getItem(cacheKeyFor(sport));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.timestamp || !Array.isArray(parsed.data)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(sport, data) {
+  try {
+    localStorage.setItem(
+      cacheKeyFor(sport),
+      JSON.stringify({ timestamp: Date.now(), data })
+    );
+  } catch {}
+}
+
+async function safeFetchJSON(url, options = {}, timeoutMs = 10000) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+// Providers
+async function fetchBasketball() {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const dateParam = `${yyyy}-${mm}-${dd}`;
+  const url = `https://www.balldontlie.io/api/v1/games?per_page=50&dates[]=${dateParam}`;
+  const json = await safeFetchJSON(url);
+  const items = Array.isArray(json?.data) ? json.data : [];
+  return items.map(g => ({
+    id: g.id,
+    homeTeam: {
+      id: g.home_team?.id,
+      name: g.home_team?.full_name || g.home_team?.name || 'Home',
+      shortName: g.home_team?.abbreviation || g.home_team?.name || 'HOM',
+      score: g.home_team_score ?? 0,
+    },
+    awayTeam: {
+      id: g.visitor_team?.id,
+      name: g.visitor_team?.full_name || g.visitor_team?.name || 'Away',
+      shortName: g.visitor_team?.abbreviation || g.visitor_team?.name || 'AWY',
+      score: g.visitor_team_score ?? 0,
+    },
+    status: g.status || (g.period === 0 ? 'Scheduled' : `Q${g.period}`),
+    time: new Date(g.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    league: 'NBA',
+    venue: g.arena || 'TBD',
+  }));
+}
+
+async function fetchFootball() {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const dateParam = `${yyyy}-${mm}-${dd}`;
+  // TheSportsDB daily soccer events (public key 3). Not strictly live but covers daily fixtures/results.
+  const url = `https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d=${dateParam}&s=Soccer`;
+  const json = await safeFetchJSON(url);
+  const items = Array.isArray(json?.events) ? json.events : [];
+  return items.map(ev => ({
+    id: ev.idEvent,
+    homeTeam: {
+      id: ev.idHomeTeam,
+      name: ev.strHomeTeam || 'Home',
+      shortName: ev.strHomeTeam ? ev.strHomeTeam.substring(0, 3).toUpperCase() : 'HOM',
+      score: Number(ev.intHomeScore ?? 0),
+    },
+    awayTeam: {
+      id: ev.idAwayTeam,
+      name: ev.strAwayTeam || 'Away',
+      shortName: ev.strAwayTeam ? ev.strAwayTeam.substring(0, 3).toUpperCase() : 'AWY',
+      score: Number(ev.intAwayScore ?? 0),
+    },
+    status: ev.strStatus || ev.strProgress || (ev.intHomeScore || ev.intAwayScore ? 'In Progress' : 'Scheduled'),
+    time: ev.strTimestamp ? new Date(ev.strTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (ev.strTime || 'TBD'),
+    league: ev.strLeague || 'Football',
+    venue: ev.strVenue || 'TBD',
+  }));
+}
+
+async function fetchCricket() {
+  const key = API_CONFIG.API_KEY && API_CONFIG.API_KEY !== 'YOUR_API_KEY_HERE' ? API_CONFIG.API_KEY : null;
+  if (!key) throw new Error('Cricket API key missing');
+  const url = `https://api.cricapi.com/v1/currentMatches?apikey=${encodeURIComponent(key)}`;
+  const json = await safeFetchJSON(url);
+  const items = Array.isArray(json?.data) ? json.data : [];
+  return items.map(m => ({
+    id: m.id || m.unique_id || `${m.name || 'match'}-${m.id || ''}`,
+    homeTeam: {
+      id: m.teamInfo?.[0]?.teamId || m.t1 || 't1',
+      name: m.teamInfo?.[0]?.name || m.t1 || 'Team 1',
+      shortName: m.teamInfo?.[0]?.shortname || (m.t1 || 'T1'),
+      score: parseCricketScore(m.t1s),
+    },
+    awayTeam: {
+      id: m.teamInfo?.[1]?.teamId || m.t2 || 't2',
+      name: m.teamInfo?.[1]?.name || m.t2 || 'Team 2',
+      shortName: m.teamInfo?.[1]?.shortname || (m.t2 || 'T2'),
+      score: parseCricketScore(m.t2s),
+    },
+    status: m.status || m.ms || 'Scheduled',
+    time: m.dateTimeGMT ? new Date(m.dateTimeGMT + 'Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'TBD',
+    league: m.series || m.matchType || 'Cricket',
+    venue: m.venue || 'TBD',
+  }));
+}
+
+function parseCricketScore(s) {
+  if (!s) return 0;
+  // Formats like "123/4 (20 ov)" -> return runs as number
+  const runs = String(s).split('/')[0];
+  const n = parseInt(runs, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export async function fetchLiveScores(sport = API_CONFIG.DEFAULT_SPORT) {
-    // In a real app, you would make an API call here
-    // For now, we'll use mock data
-    try {
-        // Simulate API delay
-        await new Promise(resolve => setTimeout(resolve, 800));
-        
-        // Return mock data with some randomization for demo purposes
-        return generateMockScores(sport);
-        
-        // In a real implementation, you would use something like:
-        /*
-        const response = await fetch(
-            `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.LIVE_SCORES}/${sport}?key=${API_CONFIG.API_KEY}`
-        );
-        
-        if (!response.ok) {
-            throw new Error(`API request failed with status ${response.status}`);
-        }
-        
-        const data = await response.json();
-        return processScoresData(data);
-        */
-    } catch (error) {
-        console.error('Error fetching live scores:', error);
-        showNotification(ERROR_MESSAGES.API_ERROR, 'error');
-        
-        // Return default matches if API fails
-        return DEFAULT_MATCHES;
-    }
+  const normalized = normalizeSport(sport);
+  try {
+    const data = await fetchBySport(normalized);
+    const processed = processScoresData(data);
+    if (processed.length) writeCache(normalized, processed);
+    return processed.length ? processed : useFallback(normalized);
+  } catch (err) {
+    console.error('Error fetching live scores:', err);
+    showNotification(ERROR_MESSAGES.API_ERROR, 'error');
+    const cached = readCache(normalized);
+    if (cached?.data) return cached.data;
+    return useFallback(normalized);
+  }
 }
 
-/**
- * Processes raw API data into a standardized format
- * @param {Array} data - Raw API response data
- * @returns {Array} - Processed match data
- */
-function processScoresData(data) {
-    if (!Array.isArray(data)) {
-        console.error('Invalid data format received:', data);
-        return [];
-    }
-    
-    return data.map(match => ({
-        id: match.GameID || match.id || Date.now() + Math.floor(Math.random() * 1000),
-        homeTeam: {
-            id: match.HomeTeamID || match.home_team?.id || `home-${match.HomeTeam || 'team'}`,
-            name: match.HomeTeam || match.home_team?.name || 'Home Team',
-            score: match.HomeTeamScore || match.home_score || 0,
-            shortName: match.HomeTeam || 'HOM',
-        },
-        awayTeam: {
-            id: match.AwayTeamID || match.away_team?.id || `away-${match.AwayTeam || 'team'}`,
-            name: match.AwayTeam || match.away_team?.name || 'Away Team',
-            score: match.AwayTeamScore || match.away_score || 0,
-            shortName: match.AwayTeam || 'AWY',
-        },
-        status: getMatchStatus(match),
-        time: getMatchTime(match),
-        league: match.League || 'NBA', // Default to NBA if not specified
-        venue: match.Stadium || match.venue?.name || 'TBD',
-    }));
+function normalizeSport(s) {
+  const v = String(s || '').toLowerCase();
+  if (['basketball', 'nba'].includes(v)) return 'basketball';
+  if (['football', 'soccer', 'futbol'].includes(v)) return 'football';
+  if (['cricket'].includes(v)) return 'cricket';
+  return 'basketball';
 }
 
-/**
- * Determines the match status based on the API response
- */
-function getMatchStatus(match) {
-    if (match.Status === 'Final' || match.period === 'Final') {
-        return 'Final';
-    }
-    
-    if (match.Status === 'InProgress' || match.period) {
-        const period = match.period || 1;
-        const periodType = match.period_type || 'Q';
-        return `${periodType}${period} ${match.clock || ''}`.trim();
-    }
-    
-    return match.DateTime ? new Date(match.DateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'TBD';
+async function fetchBySport(sport) {
+  switch (sport) {
+    case 'basketball':
+      return await fetchBasketball();
+    case 'football':
+      return await fetchFootball();
+    case 'cricket':
+      return await fetchCricket();
+    default:
+      return [];
+  }
 }
 
-/**
- * Formats the match time based on the API response
- */
-function getMatchTime(match) {
-    if (match.DateTime) {
-        const matchDate = new Date(match.DateTime);
-        return matchDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return match.time || 'TBD';
+function processScoresData(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map(m => ({
+    id: m.id ?? `${Date.now()}-${Math.random()}`,
+    homeTeam: {
+      id: m.homeTeam?.id ?? m.homeTeam?.name ?? 'home',
+      name: m.homeTeam?.name ?? 'Home Team',
+      shortName: m.homeTeam?.shortName ?? (m.homeTeam?.name ? m.homeTeam.name.slice(0, 3).toUpperCase() : 'HOM'),
+      score: Number(m.homeTeam?.score ?? 0),
+    },
+    awayTeam: {
+      id: m.awayTeam?.id ?? m.awayTeam?.name ?? 'away',
+      name: m.awayTeam?.name ?? 'Away Team',
+      shortName: m.awayTeam?.shortName ?? (m.awayTeam?.name ? m.awayTeam.name.slice(0, 3).toUpperCase() : 'AWY'),
+      score: Number(m.awayTeam?.score ?? 0),
+    },
+    status: m.status || 'Scheduled',
+    time: m.time || 'TBD',
+    league: m.league || 'Sports',
+    venue: m.venue || 'TBD',
+  }));
 }
 
-/**
- * Generates mock scores for demo purposes
- */
+function useFallback(sport) {
+  // Use defaults or generate mock for the chosen sport
+  const mocks = generateMockScores(sport);
+  return Array.isArray(mocks) && mocks.length ? mocks : DEFAULT_MATCHES;
+}
+
 function generateMockScores(sport) {
-    const sportsConfig = {
-        nba: {
-            teams: [
-                { id: 1, name: 'Lakers', shortName: 'LAL' },
-                { id: 2, name: 'Warriors', shortName: 'GSW' },
-                { id: 3, name: 'Bucks', shortName: 'MIL' },
-                { id: 4, name: 'Suns', shortName: 'PHX' },
-                { id: 5, name: 'Celtics', shortName: 'BOS' },
-                { id: 6, name: 'Nuggets', shortName: 'DEN' },
-            ],
-            statuses: ['Q1 10:00', 'Q2 05:30', 'Q3 08:15', 'Q4 02:45', 'OT 04:20', 'Final'],
-            league: 'NBA'
-        },
-        nfl: {
-            teams: [
-                { id: 7, name: 'Chiefs', shortName: 'KC' },
-                { id: 8, name: 'Buccaneers', shortName: 'TB' },
-                { id: 9, name: 'Packers', shortName: 'GB' },
-                { id: 10, name: 'Bills', shortName: 'BUF' },
-            ],
-            statuses: ['Q1 12:30', 'Q2 08:15', 'Q3 10:45', 'Q4 02:20', 'OT 08:00', 'Final'],
-            league: 'NFL'
-        },
-        // Add more sports as needed
-    };
-    
-    const config = sportsConfig[sport] || sportsConfig.nba; // Default to NBA if sport not found
-    const { teams, statuses, league } = config;
-    
-    // Generate 4-6 random matches
-    const numMatches = 4 + Math.floor(Math.random() * 3);
-    const matches = [];
-    
-    // Ensure we have enough teams for the matches
-    if (teams.length < 2) {
-        console.error('Not enough teams to generate matches');
-        return [];
-    }
-    
-    // Create matches ensuring no team plays twice
-    const shuffledTeams = [...teams].sort(() => 0.5 - Math.random());
-    
-    for (let i = 0; i < numMatches && i * 2 + 1 < shuffledTeams.length; i++) {
-        const homeTeam = shuffledTeams[i * 2];
-        const awayTeam = shuffledTeams[i * 2 + 1] || shuffledTeams[0]; // Fallback if odd number of teams
-        
-        const statusIndex = Math.floor(Math.random() * statuses.length);
-        const status = statuses[statusIndex];
-        const isFinal = status === 'Final';
-        const isInProgress = !isFinal && status.includes('Q');
-        
-        matches.push({
-            id: `match-${Date.now()}-${i}`,
-            homeTeam: {
-                ...homeTeam,
-                score: isInProgress ? Math.floor(Math.random() * 30) + 80 : (isFinal ? Math.floor(Math.random() * 30) + 80 : 0)
-            },
-            awayTeam: {
-                ...awayTeam,
-                score: isInProgress ? Math.floor(Math.random() * 30) + 75 : (isFinal ? Math.floor(Math.random() * 30) + 75 : 0)
-            },
-            status,
-            time: isInProgress || isFinal ? status : new Date(Date.now() + Math.random() * 86400000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            league
-        });
-    }
-    
-    return matches.length > 0 ? matches : DEFAULT_MATCHES;
+  const isBasketball = sport === 'basketball';
+  const teams = isBasketball
+    ? [
+        { id: 1, name: 'Lakers', shortName: 'LAL' },
+        { id: 2, name: 'Warriors', shortName: 'GSW' },
+        { id: 3, name: 'Bucks', shortName: 'MIL' },
+        { id: 4, name: 'Suns', shortName: 'PHX' },
+        { id: 5, name: 'Celtics', shortName: 'BOS' },
+        { id: 6, name: 'Nuggets', shortName: 'DEN' },
+      ]
+    : [
+        { id: 101, name: 'Team A', shortName: 'TMA' },
+        { id: 102, name: 'Team B', shortName: 'TMB' },
+        { id: 103, name: 'Team C', shortName: 'TMC' },
+        { id: 104, name: 'Team D', shortName: 'TMD' },
+      ];
+
+  const statuses = isBasketball
+    ? ['Q1 10:00', 'Q2 05:30', 'Q3 08:15', 'Q4 02:45', 'Final']
+    : ['1st Half', '2nd Half', 'HT', 'FT'];
+
+  const league = sport === 'football' ? 'Football' : sport === 'cricket' ? 'Cricket' : 'NBA';
+  const numMatches = 3;
+  const shuffled = [...teams].sort(() => 0.5 - Math.random());
+  const out = [];
+  for (let i = 0; i < numMatches && i * 2 + 1 < shuffled.length; i++) {
+    const home = shuffled[i * 2];
+    const away = shuffled[i * 2 + 1];
+    const status = statuses[Math.floor(Math.random() * statuses.length)];
+    out.push({
+      id: `mock-${sport}-${Date.now()}-${i}`,
+      homeTeam: { ...home, score: Math.floor(Math.random() * 100) },
+      awayTeam: { ...away, score: Math.floor(Math.random() * 100) },
+      status,
+      time: status,
+      league,
+      venue: 'TBD',
+    });
+  }
+  return out;
 }
 
-/**
- * Fetches detailed match information
- * @param {string} matchId - The ID of the match to get details for
- * @returns {Promise<Object>} - Detailed match information
- */
 export async function fetchMatchDetails(matchId) {
-    try {
-        // In a real app, you would make an API call here
-        // For now, we'll return mock data
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        const mockMatch = {
-            id: matchId,
-            homeTeam: {
-                id: 'team1',
-                name: 'Home Team',
-                score: 102,
-                stats: {
-                    fieldGoalPercentage: '48.5%',
-                    threePointPercentage: '36.2%',
-                    freeThrowPercentage: '82.1%',
-                    rebounds: 42,
-                    assists: 24,
-                    steals: 8,
-                    blocks: 5,
-                    turnovers: 12
-                },
-                players: [
-                    { id: 'p1', name: 'Player 1', points: 28, rebounds: 7, assists: 5 },
-                    { id: 'p2', name: 'Player 2', points: 22, rebounds: 4, assists: 8 },
-                    { id: 'p3', name: 'Player 3', points: 18, rebounds: 10, assists: 2 },
-                ]
-            },
-            awayTeam: {
-                id: 'team2',
-                name: 'Away Team',
-                score: 98,
-                stats: {
-                    fieldGoalPercentage: '45.2%',
-                    threePointPercentage: '32.8%',
-                    freeThrowPercentage: '75.6%',
-                    rebounds: 38,
-                    assists: 21,
-                    steals: 6,
-                    blocks: 3,
-                    turnovers: 15
-                },
-                players: [
-                    { id: 'p4', name: 'Player 4', points: 32, rebounds: 5, assists: 7 },
-                    { id: 'p5', name: 'Player 5', points: 19, rebounds: 8, assists: 4 },
-                    { id: 'p6', name: 'Player 6', points: 14, rebounds: 6, assists: 9 },
-                ]
-            },
-            status: 'Final',
-            time: 'Q4 00:00',
-            venue: 'Staples Center',
-            attendance: '18,997',
-            officials: ['Referee 1', 'Referee 2', 'Referee 3'],
-            gameLog: [
-                { time: 'Q1 11:30', event: 'Jump ball: Team1 vs. Team2 - Team1 gains possession' },
-                { time: 'Q1 11:10', event: 'Player 1 makes 2-pt jump shot from 15 ft' },
-                // More game log entries...
-            ]
-        };
-        
-        return mockMatch;
-    } catch (error) {
-        console.error('Error fetching match details:', error);
-        showNotification('Failed to load match details', 'error');
-        return null;
-    }
+  try {
+    await new Promise(r => setTimeout(r, 300));
+    return {
+      id: matchId,
+      homeTeam: { id: 'team1', name: 'Home Team', score: 102 },
+      awayTeam: { id: 'team2', name: 'Away Team', score: 98 },
+      status: 'Final',
+      time: 'FT',
+      venue: 'TBD',
+      gameLog: [
+        { time: '00:10', event: 'Kickoff' },
+        { time: '45:00', event: 'Halftime' },
+      ],
+    };
+  } catch (error) {
+    console.error('Error fetching match details:', error);
+    showNotification('Failed to load match details', 'error');
+    return null;
+  }
 }
 
-// Export for testing
 export default {
-    fetchLiveScores,
-    processScoresData,
-    generateMockScores,
-    fetchMatchDetails
+  fetchLiveScores,
+  fetchMatchDetails,
 };

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sports Companion - Test</title>
+</head>
+<body>
+  <h1>Live Scores Test</h1>
+  <pre id="out">Loading...</pre>
+  <script type="module">
+    import { fetchLiveScores } from './liveScores.js';
+
+    const out = document.getElementById('out');
+    async function run() {
+      try {
+        const data = await fetchLiveScores('basketball');
+        out.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        out.textContent = 'Error: ' + (e?.message || e);
+      }
+    }
+    run();
+  </script>
+</body>
+</html>
