@@ -1,6 +1,6 @@
-# 🏆 Sports Companion App
+# 🏆 Sports Companion App v1.0
 
-A real-time sports companion application that keeps you updated with live scores, match highlights, team statistics, and personalized notifications for your favorite teams and sports.
+A real-time sports companion application that keeps you updated with live scores, match highlights, team statistics, and personalized notifications for your favorite teams and sports. Built with modern web technologies and designed for the best user experience.
 
 ![Sports Companion App Preview](https://via.placeholder.com/800x400.png?text=Sports+Companion+App)
 
@@ -30,11 +30,19 @@ A real-time sports companion application that keeps you updated with live scores
 - Performance trends
 - Interactive data visualizations
 
+### 🎯 Key Features in v1.0
+- **Presentation Mode**: Full-screen experience for live matches and stats
+- **Theme Toggling**: Seamless dark/light theme switching
+- **Real-time Updates**: Live scores with auto-refresh
+- **Responsive Design**: Works on all devices
+- **Modular Architecture**: Easy to maintain and extend
+
 ### ⚙️ User Experience
 - Offline mode with cached data
 - Quick search functionality
 - Favorite teams management
 - Customizable dashboard
+- Smooth animations and transitions
 
 ## 🚀 Getting Started
 
@@ -42,6 +50,11 @@ A real-time sports companion application that keeps you updated with live scores
 - Node.js (v14 or higher)
 - npm (v6 or higher)
 - Modern web browser (Chrome, Firefox, Safari, Edge)
+
+### Quick Start
+1. Clone the repository
+2. Open `index.html` in your browser
+3. No build step required!
 
 ### Installation
 
@@ -96,29 +109,30 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Font Awesome](https://fontawesome.com/) for icons
 - All contributors who helped improve this project
 
-## 📞 Contact
+## 📞 Contact & Support
 
-For any questions or feedback, please reach out to:
-- [Your Name] - [your.email@example.com]
-- Project Link: [https://github.com/yourusername/sports-companion](https://github.com/yourusername/sports-companion)
+For support or to report issues, please:
+1. Open an issue on [GitHub Issues](https://github.com/aanyatulasi/sports-companion/issues)
+2. Email: [your-email@example.com](mailto:your-email@example.com)
 
-## 📈 Project Structure
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 📂 Project Structure
 
 ```
 sports-companion/
-├── public/                  # Static files
-├── src/
-│   ├── components/          # Reusable UI components
-│   ├── services/            # API services
-│   ├── utils/               # Helper functions
-│   ├── assets/              # Images, fonts, etc.
-│   ├── styles/              # Global styles
-│   ├── App.js               # Main component
-│   └── index.js             # App entry point
-├── .gitignore
-├── package.json
-├── README.md
-└── config.js               # App configuration
+├── index.html              # Main HTML file
+├── styles.css              # Global styles
+├── app.js                  # Core application logic
+├── config.js               # App configuration
+├── dashboard.js            # Dashboard module
+├── liveScores.js           # Live scores functionality
+├── notifications.js        # Notification system
+├── stats.js                # Statistics module
+├── highlights.js           # Match highlights
+└── README.md               # This file
 ```
 
 ## 🧪 Testing
@@ -146,8 +160,16 @@ npm test
 - Mobile Safari (iOS 12+)
 - Chrome for Android (latest)
 
-## 🤖 Future Enhancements
+## 🚀 Version 1.0 Highlights
 
+### 🆕 New Features
+- Presentation mode for full-screen experience
+- Dark/Light theme toggle
+- Real-time score updates
+- Offline support with caching
+- Responsive design for all devices
+
+### 🔄 What's Next
 - [ ] User authentication
 - [ ] Push notifications
 - [ ] Fantasy sports integration
@@ -176,5 +198,7 @@ Give a ⭐️ if this project helped you!
 ---
 
 <div align="center">
-  Made with ❤️ by [Your Team Name]
+  <h3>🏆 Sports Companion v1.0</h3>
+  <p>Built with ❤️ by Aanya, Niki, Rohan, Advik, and Nishaad</p>
+  <p>© 2025 Sports Companion. All rights reserved.</p>
 </div>
