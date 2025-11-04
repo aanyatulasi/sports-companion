@@ -10,9 +10,25 @@
  */
 
 // Core Imports
-import { API_CONFIG, APP_CONFIG, STORAGE_KEYS, ERROR_MESSAGES, DEFAULT_MATCHES } from './config.js';
+import { API_CONFIG, STORAGE_KEYS, ERROR_MESSAGES, DEFAULT_MATCHES } from './config.js';
 import { fetchLiveScores } from './liveScores.js';
 import { showNotification, requestNotificationPermission } from './notifications.js';
+
+// Animation utility
+const animateElement = (element, animation, duration = 500) => {
+    return new Promise((resolve) => {
+        element.classList.add('animate__animated', `animate__${animation}`);
+        element.style.setProperty('--animate-duration', `${duration}ms`);
+        
+        const handleAnimationEnd = () => {
+            element.classList.remove('animate__animated', `animate__${animation}`);
+            element.removeEventListener('animationend', handleAnimationEnd);
+            resolve();
+        };
+        
+        element.addEventListener('animationend', handleAnimationEnd);
+    });
+};
 
 // DOM Elements
 const appContainer = document.documentElement;
@@ -41,24 +57,46 @@ const state = {
 /**
  * Initialize the application
  */
-async function init() {
-    // Set up event listeners
-    setupEventListeners();
-    
-    // Set initial theme
-    setTheme(state.theme);
-    
-    // Request notification permission
-    await requestNotificationPermission();
-    
-    // Initial data load
-    await loadData();
-    
-    // Set up auto-refresh
-    setupAutoRefresh();
-    
-    // Show online/offline status
-    updateConnectionStatus();
+export async function init() {
+    try {
+        // Set initial theme from localStorage or system preference
+        const savedTheme = localStorage.getItem(STORAGE_KEYS.THEME) || 
+                          (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        setTheme(savedTheme);
+        
+        // Request notification permission
+        await requestNotificationPermission();
+        
+        // Set up event listeners
+        setupEventListeners();
+        
+        // Load initial data with loading state
+        updateLoadingState(true);
+        try {
+            await loadData();
+        } finally {
+            updateLoadingState(false);
+        }
+        
+        // Set up auto-refresh
+        setupAutoRefresh();
+        
+        // Update connection status
+        updateConnectionStatus();
+        
+        // Listen for online/offline events
+        window.addEventListener('online', updateConnectionStatus);
+        window.addEventListener('offline', updateConnectionStatus);
+        
+        // Dispatch app initialized event
+        document.dispatchEvent(new CustomEvent('app:initialized'));
+        
+        return true;
+    } catch (error) {
+        console.error('Error initializing app:', error);
+        showNotification(ERROR_MESSAGES.INIT_FAILED, 'error');
+        throw error; // Re-throw to allow handling in main.js
+    }
 }
 
 /**
@@ -200,20 +238,55 @@ function renderMatches() {
 }
 
 /**
- * Set up auto-refresh
+ * Set up auto-refresh with exponential backoff
  */
 function setupAutoRefresh() {
-    // Clear existing interval
+    // Clear existing interval if any
     if (state.refreshInterval) {
         clearInterval(state.refreshInterval);
+        state.refreshInterval = null;
     }
     
-    // Set up new interval
-    state.refreshInterval = setInterval(() => {
-        if (!state.isOffline) {
-            loadData();
+    // Don't set up auto-refresh in presentation mode
+    if (document.body.classList.contains('presentation-mode')) {
+        return;
+    }
+    
+    let retryCount = 0;
+    const maxRetries = 5;
+    const baseDelay = 30000; // 30 seconds
+    
+    const refreshData = async () => {
+        if (state.isOffline || state.isLoading) {
+            return;
         }
-    }, APP_CONFIG.REFRESH_INTERVAL);
+        
+        try {
+            await loadData(true);
+            retryCount = 0; // Reset retry count on success
+        } catch (error) {
+            console.error('Auto-refresh failed:', error);
+            retryCount++;
+            
+            if (retryCount <= maxRetries) {
+                // Exponential backoff with jitter
+                const backoff = Math.min(
+                    baseDelay * Math.pow(2, retryCount) + (Math.random() * 2000),
+                    300000 // Max 5 minutes
+                );
+                
+                console.log(`Retrying in ${Math.round(backoff / 1000)} seconds...`);
+                setTimeout(refreshData, backoff);
+                return;
+            }
+        }
+        
+        // Schedule next refresh
+        state.refreshInterval = setTimeout(refreshData, baseDelay);
+    };
+    
+    // Initial refresh
+    state.refreshInterval = setTimeout(refreshData, baseDelay);
 }
 
 /**
