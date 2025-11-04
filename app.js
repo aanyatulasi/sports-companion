@@ -1,64 +1,400 @@
 /**
- * TODO: Core Engine (Aanya)
- * - Implement state management system (consider using Redux or Context API)
- * - Set up routing and navigation
- * - Handle app lifecycle and performance optimization
- * - Implement error boundaries and global error handling
- * - Set up service workers for offline support
+ * Sports Companion - Main Application
+ * 
+ * Core Features:
+ * 1. Fetches live scores with auto-refresh
+ * 2. Renders match tiles with team data
+ * 3. Supports offline mode with cached data
+ * 4. Theme switching (dark/light)
+ * 5. Responsive design
  */
 
-/**
- * TODO: API & Testing (Niki)
- * - Set up API service layer with proper error handling
- * - Implement data validation and sanitization
- * - Set up unit and integration tests
- * - Configure test environment and CI/CD pipelines
- * - Implement API response caching strategy
- */
-
-/**
- * TODO: Dashboard & Presentation (Rohan)
- * - Implement responsive dashboard layout
- * - Create reusable UI components
- * - Set up theme and styling system
- * - Implement accessibility features
- * - Optimize for different screen sizes
- */
-
-/**
- * TODO: Design & Animation (Advik)
- * - Implement smooth animations and transitions
- * - Create loading states and skeleton screens
- * - Design micro-interactions
- * - Optimize for 60fps performance
- * - Implement dark/light theme support
- */
-
-/**
- * TODO: Data & Alerts (Nishaad)
- * - Set up real-time data updates
- * - Implement notification system
- * - Handle data persistence
- * - Set up analytics and monitoring
- * - Implement data caching strategy
- */
-
-// Import configurations and modules
-import { API_CONFIG, APP_CONFIG, STORAGE_KEYS, ERROR_MESSAGES } from './config.js';
+// Core Imports
+import { API_CONFIG, APP_CONFIG, STORAGE_KEYS, ERROR_MESSAGES, DEFAULT_MATCHES } from './config.js';
 import { fetchLiveScores } from './liveScores.js';
-import { displayHighlights } from './highlights.js';
-import { displayTeamStats } from './stats.js';
-import { showNotification } from './notifications.js';
+import { showNotification, requestNotificationPermission } from './notifications.js';
 
 // DOM Elements
-const searchInput = document.getElementById('search-input');
-const searchBtn = document.getElementById('search-btn');
+const appContainer = document.documentElement;
+const themeToggle = document.getElementById('theme-toggle');
+const sportFilter = document.getElementById('sport-filter');
+const refreshButton = document.getElementById('refresh-button');
+const lastUpdatedEl = document.getElementById('last-updated');
 const liveScoresContainer = document.getElementById('live-scores-container');
 const highlightsContainer = document.getElementById('highlights-container');
 const statsContainer = document.getElementById('stats-container');
+const offlineIndicator = document.getElementById('offline-indicator');
+const loadingIndicator = document.getElementById('loading-indicator');
 
 // App State
-let appState = {
+const state = {
+    matches: [],
+    filteredMatches: [],
+    isLoading: false,
+    isOffline: !navigator.onLine,
+    lastUpdated: null,
+    currentSport: 'all',
+    theme: localStorage.getItem(STORAGE_KEYS.THEME) || 'light',
+    refreshInterval: null
+};
+
+/**
+ * Initialize the application
+ */
+async function init() {
+    // Set up event listeners
+    setupEventListeners();
+    
+    // Set initial theme
+    setTheme(state.theme);
+    
+    // Request notification permission
+    await requestNotificationPermission();
+    
+    // Initial data load
+    await loadData();
+    
+    // Set up auto-refresh
+    setupAutoRefresh();
+    
+    // Show online/offline status
+    updateConnectionStatus();
+}
+
+/**
+ * Set up event listeners
+ */
+function setupEventListeners() {
+    // Theme toggle
+    if (themeToggle) {
+        themeToggle.addEventListener('click', toggleTheme);
+    }
+    
+    // Sport filter
+    if (sportFilter) {
+        sportFilter.addEventListener('change', (e) => {
+            state.currentSport = e.target.value;
+            filterMatches();
+        });
+    }
+    
+    // Manual refresh
+    if (refreshButton) {
+        refreshButton.addEventListener('click', () => loadData(true));
+    }
+    
+    // Online/offline detection
+    window.addEventListener('online', updateConnectionStatus);
+    window.addEventListener('offline', updateConnectionStatus);
+}
+
+/**
+ * Load data from API or cache
+ * @param {boolean} forceRefresh - Force refresh from server
+ */
+async function loadData(forceRefresh = false) {
+    if (state.isLoading) return;
+    
+    state.isLoading = true;
+    updateLoadingState(true);
+    
+    try {
+        const data = await fetchLiveScores(state.currentSport === 'all' ? null : state.currentSport, forceRefresh);
+        
+        // Only update if we got new data
+        if (data && data.length > 0) {
+            state.matches = data;
+            state.lastUpdated = new Date();
+            updateLastUpdated();
+            filterMatches();
+            
+            // Cache the data
+            cacheData(data);
+        }
+    } catch (error) {
+        console.error('Error loading data:', error);
+        
+        // Try to load from cache if online request fails
+        if (state.matches.length === 0) {
+            const cachedData = getCachedData();
+            if (cachedData) {
+                state.matches = cachedData;
+                filterMatches();
+                showNotification('Using cached data', 'info');
+            } else {
+                // Use default mock data as last resort
+                state.matches = DEFAULT_MATCHES;
+                filterMatches();
+                showNotification(ERROR_MESSAGES.OFFLINE_MODE, 'warning');
+            }
+        }
+    } finally {
+        state.isLoading = false;
+        updateLoadingState(false);
+    }
+}
+
+/**
+ * Filter matches by selected sport
+ */
+function filterMatches() {
+    state.filteredMatches = state.currentSport === 'all' 
+        ? [...state.matches] 
+        : state.matches.filter(match => match.league.toLowerCase() === state.currentSport);
+    
+    renderMatches();
+}
+
+/**
+ * Render matches to the DOM
+ */
+function renderMatches() {
+    if (!liveScoresContainer) return;
+    
+    if (state.filteredMatches.length === 0) {
+        liveScoresContainer.innerHTML = `
+            <div class="no-matches">
+                <i class="fas fa-tv"></i>
+                <p>No matches found for the selected sport.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    liveScoresContainer.innerHTML = state.filteredMatches.map(match => `
+        <div class="match-card fade-in" data-match-id="${match.id}">
+            <div class="match-header">
+                <span class="league-badge">${match.league}</span>
+                <span class="match-status ${getStatusClass(match.status)}">${match.status}</span>
+            </div>
+            <div class="teams">
+                <div class="team home-team">
+                    <img src="${getTeamLogo(match.homeTeam.name)}" alt="${match.homeTeam.name}" class="team-logo">
+                    <span class="team-name">${match.homeTeam.name}</span>
+                </div>
+                <div class="score">
+                    <span class="score-home">${match.homeTeam.score}</span>
+                    <span class="score-separator">:</span>
+                    <span class="score-away">${match.awayTeam.score}</span>
+                </div>
+                <div class="team away-team">
+                    <img src="${getTeamLogo(match.awayTeam.name)}" alt="${match.awayTeam.name}" class="team-logo">
+                    <span class="team-name">${match.awayTeam.name}</span>
+                </div>
+            </div>
+            <div class="match-time">
+                <i class="far fa-clock"></i>
+                <span>${formatMatchTime(match.time)}</span>
+            </div>
+        </div>
+    `).join('');
+    
+    // Add event listeners to match cards
+    document.querySelectorAll('.match-card').forEach(card => {
+        card.addEventListener('click', () => {
+            const matchId = card.dataset.matchId;
+            // Navigate to match details
+            console.log('Viewing match:', matchId);
+        });
+    });
+}
+
+/**
+ * Set up auto-refresh
+ */
+function setupAutoRefresh() {
+    // Clear existing interval
+    if (state.refreshInterval) {
+        clearInterval(state.refreshInterval);
+    }
+    
+    // Set up new interval
+    state.refreshInterval = setInterval(() => {
+        if (!state.isOffline) {
+            loadData();
+        }
+    }, APP_CONFIG.REFRESH_INTERVAL);
+}
+
+/**
+ * Toggle between dark and light theme
+ */
+function toggleTheme() {
+    const newTheme = state.theme === 'light' ? 'dark' : 'light';
+    setTheme(newTheme);
+}
+
+/**
+ * Set the application theme
+ * @param {string} theme - 'light' or 'dark'
+ */
+function setTheme(theme) {
+    state.theme = theme;
+    appContainer.setAttribute('data-theme', theme);
+    localStorage.setItem(STORAGE_KEYS.THEME, theme);
+    
+    // Update button icon
+    if (themeToggle) {
+        themeToggle.innerHTML = theme === 'dark' 
+            ? '<i class="fas fa-sun"></i>'
+            : '<i class="fas fa-moon"></i>';
+    }
+}
+
+/**
+ * Update connection status
+ */
+function updateConnectionStatus() {
+    state.isOffline = !navigator.onLine;
+    
+    if (offlineIndicator) {
+        offlineIndicator.classList.toggle('visible', state.isOffline);
+    }
+    
+    if (!state.isOffline) {
+        // If we just came back online, refresh data
+        loadData(true);
+    }
+}
+
+/**
+ * Update loading state
+ * @param {boolean} isLoading - Whether the app is currently loading
+ */
+function updateLoadingState(isLoading) {
+    state.isLoading = isLoading;
+    
+    if (loadingIndicator) {
+        loadingIndicator.style.display = isLoading ? 'flex' : 'none';
+    }
+    
+    if (refreshButton) {
+        refreshButton.disabled = isLoading;
+        refreshButton.innerHTML = isLoading 
+            ? '<i class="fas fa-spinner fa-spin"></i>'
+            : '<i class="fas fa-sync-alt"></i>';
+    }
+}
+
+/**
+ * Update last updated timestamp
+ */
+function updateLastUpdated() {
+    if (!lastUpdatedEl) return;
+    
+    if (state.lastUpdated) {
+        const timeString = state.lastUpdated.toLocaleTimeString();
+        lastUpdatedEl.textContent = `Last updated: ${timeString}`;
+        lastUpdatedEl.style.display = 'block';
+    } else {
+        lastUpdatedEl.style.display = 'none';
+    }
+}
+
+/**
+ * Cache data to localStorage
+ * @param {Array} data - Data to cache
+ */
+function cacheData(data) {
+    try {
+        const cache = {
+            data,
+            timestamp: Date.now()
+        };
+        localStorage.setItem(STORAGE_KEYS.CACHED_MATCHES, JSON.stringify(cache));
+    } catch (error) {
+        console.error('Error caching data:', error);
+    }
+}
+
+/**
+ * Get cached data from localStorage
+ * @returns {Array|null} Cached data or null if not found/expired
+ */
+function getCachedData() {
+    try {
+        const cached = localStorage.getItem(STORAGE_KEYS.CACHED_MATCHES);
+        if (!cached) return null;
+        
+        const { data, timestamp } = JSON.parse(cached);
+        const cacheAge = Date.now() - timestamp;
+        const maxCacheAge = APP_CONFIG.CACHE_TTL || 3600000; // 1 hour default
+        
+        return cacheAge < maxCacheAge ? data : null;
+    } catch (error) {
+        console.error('Error getting cached data:', error);
+        return null;
+    }
+}
+
+/**
+ * Get CSS class for match status
+ * @param {string} status - Match status
+ * @returns {string} CSS class
+ */
+function getStatusClass(status) {
+    if (!status) return '';
+    
+    const statusLower = status.toLowerCase();
+    if (statusLower.includes('final')) return 'status-finished';
+    if (statusLower.includes('live') || statusLower.includes('q')) return 'status-live';
+    return 'status-upcoming';
+}
+
+/**
+ * Format match time
+ * @param {string} timeString - Time string to format
+ * @returns {string} Formatted time
+ */
+function formatMatchTime(timeString) {
+    if (!timeString) return 'TBD';
+    
+    // If it's a date string, format it
+    const time = new Date(timeString);
+    if (!isNaN(time.getTime())) {
+        return time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    
+    return timeString; // Return as is if not a valid date
+}
+
+/**
+ * Get team logo URL
+ * @param {string} teamName - Team name
+ * @returns {string} Logo URL
+ */
+function getTeamLogo(teamName) {
+    // In a real app, you would have a mapping of team names to logo URLs
+    // For now, we'll use a placeholder
+    const teamId = teamName.toLowerCase().replace(/\s+/g, '-');
+    return `https://via.placeholder.com/60x60.png?text=${teamName.substring(0, 2).toUpperCase()}`;
+}
+
+// Initialize the app when the DOM is fully loaded
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
+
+// Export for testing
+export {
+    state,
+    init,
+    loadData,
+    filterMatches,
+    renderMatches,
+    toggleTheme,
+    setTheme,
+    updateConnectionStatus
+};
+
+// Search functionality (to be implemented)
+const searchInput = document.getElementById('search-input');
+const searchBtn = document.getElementById('search-btn');
+
+// App State
+const appState = {
     liveScores: [],
     favoriteTeams: [],
     notificationsEnabled: true,
