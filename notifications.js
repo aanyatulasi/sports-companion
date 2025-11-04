@@ -38,36 +38,130 @@
  * - Set up A/B testing for notifications
  */
 
-import { APP_CONFIG } from './config.js';
+import { APP_CONFIG, STORAGE_KEYS, NOTIFICATION_TYPES } from './config.js';
 
 // DOM Elements
 const notificationToast = document.getElementById('notification-toast');
+const notificationSound = document.getElementById('notification-sound');
 let notificationTimeout;
+
+// Sound files
+const SOUNDS = {
+    [NOTIFICATION_TYPES.GOAL]: '/sounds/goal.mp3',
+    [NOTIFICATION_TYPES.SCORE_UPDATE]: '/sounds/score-update.mp3',
+    [NOTIFICATION_TYPES.MATCH_START]: '/sounds/whistle.mp3',
+    [NOTIFICATION_TYPES.MATCH_END]: '/sounds/final-whistle.mp3',
+    [NOTIFICATION_TYPES.HIGHLIGHT]: '/sounds/highlight.mp3'
+};
+
+// Initialize audio context for better sound control
+let audioContext;
+let audioBufferCache = {};
+
+// Check if browser supports Web Audio API
+const isAudioContextSupported = () => {
+    return 'AudioContext' in window || 'webkitAudioContext' in window;
+};
+
+// Initialize audio context
+const initAudioContext = () => {
+    if (!audioContext && isAudioContextSupported()) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioContext = new AudioContext();
+    }
+    return audioContext;
+};
+
+// Preload sound files
+const preloadSounds = async () => {
+    if (!isAudioContextSupported()) return;
+    
+    const context = initAudioContext();
+    
+    for (const [type, url] of Object.entries(SOUNDS)) {
+        try {
+            const response = await fetch(url);
+            const arrayBuffer = await response.arrayBuffer();
+            const audioBuffer = await context.decodeAudioData(arrayBuffer);
+            audioBufferCache[type] = audioBuffer;
+        } catch (error) {
+            console.error(`Failed to load sound: ${url}`, error);
+        }
+    }
+};
 
 /**
  * Shows a notification toast message
  * @param {string} message - The message to display
  * @param {string} type - The type of notification ('success', 'error', 'warning', 'info')
+ * @param {Object} [options] - Additional notification options
+ * @param {string} [options.sound] - Sound type to play
+ * @param {string} [options.teamId] - Team ID for team-specific notifications
+ * @param {boolean} [options.persistent] - Whether the notification should stay until dismissed
  * @param {number} [duration=5000] - Duration in milliseconds to show the notification
  */
-export function showNotification(message, type = 'info', duration = APP_CONFIG.NOTIFICATION_TIMEOUT) {
-    // Clear any existing notification timeout
-    if (notificationTimeout) {
+export function showNotification(message, type = 'info', options = {}) {
+    if (!notificationToast) {
+        console.warn('Notification toast element not found');
+        return;
+    }
+
+    // Check if notification is for a favorite team
+    const favoriteTeams = JSON.parse(localStorage.getItem(STORAGE_KEYS.FAVORITE_TEAMS) || '[]');
+    if (options.teamId && !favoriteTeams.includes(options.teamId)) {
+        return; // Skip if not a favorite team
+    }
+
+    // Clear any existing timeout for non-persistent notifications
+    if (notificationTimeout && !options.persistent) {
         clearTimeout(notificationTimeout);
     }
+
+    // Set notification content and style
+    notificationToast.innerHTML = `
+        <div class="notification-content">
+            <span class="notification-message">${message}</span>
+            ${options.persistent ? '<button class="notification-close">×</button>' : ''}
+        </div>
+    `;
     
-    // Set notification content and styles
-    notificationToast.textContent = message;
     notificationToast.className = `notification-toast ${type}`;
+    notificationToast.style.display = 'flex';
     
-    // Show the notification
-    notificationToast.classList.add('show');
-    
-    // Auto-hide after specified duration
-    notificationTimeout = setTimeout(() => {
-        hideNotification();
-    }, duration);
-    
+    // Add close button event listener
+    const closeButton = notificationToast.querySelector('.notification-close');
+    if (closeButton) {
+        closeButton.addEventListener('click', () => {
+            notificationToast.style.display = 'none';
+        });
+    }
+
+    // Play sound if specified
+    if (options.sound) {
+        playNotificationSound(options.sound);
+    }
+
+    // Show desktop notification if enabled and not in focus
+    if (!document.hasFocus() && isNotificationSupported() && Notification.permission === 'granted') {
+        const notification = new Notification(APP_CONFIG.APP_NAME, {
+            body: message,
+            icon: '/icons/icon-192x192.png',
+            tag: 'sports-notification'
+        });
+
+        // Handle notification click
+        notification.onclick = () => {
+            window.focus();
+            notification.close();
+        };
+    }
+
+    // Auto-hide after timeout if not persistent
+    if (!options.persistent) {
+        notificationTimeout = setTimeout(() => {
+            notificationToast.style.display = 'none';
+        }, APP_CONFIG.NOTIFICATION_TIMEOUT);
+    }    
     // Add click handler to dismiss on click
     notificationToast.onclick = hideNotification;
 }
@@ -76,7 +170,7 @@ export function showNotification(message, type = 'info', duration = APP_CONFIG.N
  * Hides the currently displayed notification
  */
 function hideNotification() {
-    notificationToast.classList.remove('show');
+    notificationToast.style.display = 'none';
     if (notificationTimeout) {
         clearTimeout(notificationTimeout);
     }

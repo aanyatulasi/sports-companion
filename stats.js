@@ -38,8 +38,67 @@
  * - Set up stats history tracking
  */
 
-import { API_CONFIG, ERROR_MESSAGES } from './config.js';
-import { showNotification } from './notifications.js';
+import { API_CONFIG, ERROR_MESSAGES, STORAGE_KEYS } from './config.js';
+import { showNotification, requestNotificationPermission } from './notifications.js';
+import Chart from 'chart.js/auto';
+
+// Watchlist management
+export const Watchlist = {
+    get: () => {
+        return JSON.parse(localStorage.getItem(STORAGE_KEYS.WATCHLIST) || '[]');
+    },
+    
+    add: (gameId) => {
+        const watchlist = Watchlist.get();
+        if (!watchlist.includes(gameId)) {
+            watchlist.push(gameId);
+            localStorage.setItem(STORAGE_KEYS.WATCHLIST, JSON.stringify(watchlist));
+            return true;
+        }
+        return false;
+    },
+    
+    remove: (gameId) => {
+        let watchlist = Watchlist.get();
+        const index = watchlist.indexOf(gameId);
+        if (index > -1) {
+            watchlist.splice(index, 1);
+            localStorage.setItem(STORAGE_KEYS.WATCHLIST, JSON.stringify(watchlist));
+            return true;
+        }
+        return false;
+    },
+    
+    isWatching: (gameId) => {
+        return Watchlist.get().includes(gameId);
+    }
+};
+
+// Chart configuration
+const chartConfig = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+        legend: {
+            position: 'top',
+        },
+        tooltip: {
+            mode: 'index',
+            intersect: false,
+        }
+    },
+    scales: {
+        y: {
+            beginAtZero: true
+        }
+    }
+};
+
+// Chart instances cache
+const chartInstances = new Map();
+
+// Team stats cache
+const teamStatsCache = new Map();
 
 // Mock data for team stats (in a real app, this would come from an API)
 const MOCK_TEAM_STATS = {
@@ -48,6 +107,8 @@ const MOCK_TEAM_STATS = {
         name: 'Los Angeles Lakers',
         shortName: 'LAL',
         logo: 'https://via.placeholder.com/100x100/yellow/purple?text=LAL',
+        primaryColor: '#552583',
+        secondaryColor: '#FDB927',
         record: '42-30',
         position: '4th in Western Conference',
         streak: 'W3',
@@ -105,45 +166,39 @@ const MOCK_TEAM_STATS = {
 };
 
 /**
- * Fetches team statistics
+ * Fetches team statistics with caching
  * @param {string} teamId - The ID of the team to get stats for
  * @param {string} sport - The sport (e.g., 'basketball', 'football')
+ * @param {boolean} forceRefresh - Whether to bypass cache
  * @returns {Promise<Object>} - Team statistics
  */
-export async function fetchTeamStats(teamId, sport = 'basketball') {
+export async function fetchTeamStats(teamId, sport = 'basketball', forceRefresh = false) {
+    const cacheKey = `${teamId}_${sport}`;
+    
+    // Return cached data if available and not forcing refresh
+    if (teamStatsCache.has(cacheKey) && !forceRefresh) {
+        return teamStatsCache.get(cacheKey);
+    }
+    
     try {
-        // In a real app, you would make an API call here
-        // For now, we'll use mock data with a simulated delay
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // In a real app, this would be an API call
+        // const response = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.TEAM_STATS}?team=${teamId}&sport=${sport}`, {
+        //     headers: { 'Authorization': `Bearer ${API_CONFIG.API_KEY}` }
+        // });
+        // if (!response.ok) throw new Error('Failed to fetch team stats');
+        // const data = await response.json();
         
-        // Get team stats from mock data or return a default object if not found
-        const teamStats = MOCK_TEAM_STATS[teamId.toLowerCase()] || {
-            id: teamId,
-            name: teamId.charAt(0).toUpperCase() + teamId.slice(1),
-            shortName: teamId.toUpperCase().substring(0, 3),
-            logo: `https://via.placeholder.com/100x100/gray/white?text=${teamId.substring(0, 3).toUpperCase()}`,
-            record: '0-0',
-            position: 'N/A',
-            streak: '-',
-            pointsPerGame: 0,
-            pointsAllowed: 0,
-            players: []
-        };
+        // Mock response
+        const data = MOCK_TEAM_STATS[teamId] || null;
         
-        return teamStats;
-        
-        /* Real API implementation would look something like this:
-        const response = await fetch(
-            `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.TEAM_STATS}/${sport}/${teamId}?key=${API_CONFIG.API_KEY}`
-        );
-        
-        if (!response.ok) {
-            throw new Error(`API request failed with status ${response.status}`);
+        if (data) {
+            // Process and cache the data
+            const processedData = processTeamStats(data);
+            teamStatsCache.set(cacheKey, processedData);
+            return processedData;
         }
         
-        const data = await response.json();
-        return data.teamStats || {};
-        */
+        return null;
     } catch (error) {
         console.error('Error fetching team stats:', error);
         showNotification(ERROR_MESSAGES.API_ERROR, 'error');
@@ -152,202 +207,268 @@ export async function fetchTeamStats(teamId, sport = 'basketball') {
 }
 
 /**
+ * Processes raw team stats data into a more usable format
+ * @param {Object} data - Raw team stats data
+ * @returns {Object} - Processed team stats
+ */
+function processTeamStats(data) {
+    // Add derived stats and calculations here
+    return {
+        ...data,
+        // Example derived stats
+        winPercentage: data.wins / (data.wins + data.losses) * 100 || 0,
+        pointsPerGame: data.pointsScored / data.gamesPlayed || 0,
+        // Add more processed stats as needed
+    };
+}
+
+/**
  * Displays team statistics in the specified container
  * @param {HTMLElement} container - The container element to render stats in
  * @param {string} teamId - The ID of the team to display stats for
  * @param {string} sport - The sport (e.g., 'basketball', 'football')
+ * @param {Object} options - Display options
+ * @param {boolean} options.compact - Whether to show a compact view
+ * @param {boolean} options.showWatchButton - Whether to show the watch button
  */
-export async function displayTeamStats(container, teamId, sport = 'basketball') {
+export async function displayTeamStats(container, teamId, sport = 'basketball', options = {}) {
     if (!container) {
-        console.error('No container provided for team stats');
+        console.error('Container element not found');
         return;
     }
+
+    const { compact = false, showWatchButton = true } = options;
     
-    // Show loading state
-    container.innerHTML = '<div class="loading">Loading team stats...</div>';
+    container.innerHTML = `
+        <div class="stats-loading">
+            <div class="spinner"></div>
+            <p>Loading team stats...</p>
+        </div>`;
     
     try {
-        // Fetch team stats
-        const teamStats = await fetchTeamStats(teamId, sport);
+        const stats = await fetchTeamStats(teamId, sport);
         
-        if (!teamStats) {
+        if (!stats) {
             container.innerHTML = `
-                <div class="error-message">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <p>Failed to load team stats. Please try again later.</p>
-                </div>
-            `;
+                <div class="stats-error">
+                    <i class="icon-error"></i>
+                    <p>Failed to load team stats.</p>
+                    <button class="btn btn-retry" data-action="retry">Retry</button>
+                </div>`;
             return;
         }
         
-        // Render team stats
-        container.innerHTML = createTeamStatsHTML(teamStats);
+        // Add watch status to stats
+        stats.isWatched = Watchlist.isWatching(teamId);
+        
+        container.innerHTML = createTeamStatsHTML(stats, { compact, showWatchButton });
+        
+        // Add event listeners for interactive elements
+        setupTeamStatsInteractions(container, teamId, sport);
+        
+        // Render any charts if not in compact mode
+        if (!compact) {
+            await renderTeamCharts(container, stats);
+        }
+        
+        // Trigger animation
+        requestAnimationFrame(() => {
+            container.classList.add('loaded');
+        });
         
     } catch (error) {
         console.error('Error displaying team stats:', error);
         container.innerHTML = `
-            <div class="error-message">
-                <i class="fas fa-exclamation-triangle"></i>
-                <p>Failed to load team stats. Please try again later.</p>
-            </div>
-        `;
+            <div class="stats-error">
+                <i class="icon-error"></i>
+                <p>${ERROR_MESSAGES.API_ERROR}</p>
+                <button class="btn btn-retry" data-action="retry">Retry</button>
+            </div>`;
     }
 }
 
 /**
  * Creates HTML for team statistics
- * @param {Object} teamStats - Team statistics
+ * @param {Object} team - Team statistics and info
+ * @param {Object} options - Display options
  * @returns {string} - HTML string
  */
-function createTeamStatsHTML(teamStats) {
-    return `
-        <div class="team-stats">
-            <div class="team-header">
-                <div class="team-logo">
-                    <img src="${teamStats.logo}" alt="${teamStats.name}">
+function createTeamStatsHTML(team, options = {}) {
+    const { compact = false, showWatchButton = true } = options;
+    
+    if (!team) return '<div class="stats-error">No team data available</div>';
+    
+    // Helper function to format stat values
+    const formatStat = (value, isPercentage = false, decimals = 1) => {
+        if (value === undefined || value === null) return 'N/A';
+        if (isPercentage) return `${(value * 100).toFixed(decimals)}%`;
+        if (typeof value === 'number' && value % 1 !== 0) return value.toFixed(decimals);
+        return value;
+    };
+    
+    // Watch button HTML
+    const watchButton = showWatchButton ? `
+        <button class="btn btn-watch ${team.isWatched ? 'watching' : ''}" 
+                data-team-id="${team.id}" 
+                data-action="toggle-watch">
+            ${team.isWatched ? '✓ Following' : 'Follow Team'}
+        </button>` : '';
+    
+    // Main stats cards
+    const statsCards = `
+        <div class="stats-grid">
+            <div class="stat-card card">
+                <div class="stat-card__header">
+                    <h3 class="stat-card__title">Offense</h3>
+                    <span class="stat-card__trend ${team.offenseTrend >= 0 ? 'up' : 'down'}">
+                        ${team.offenseTrend >= 0 ? '↑' : '↓'} ${Math.abs(team.offenseTrend || 0)}%
+                    </span>
                 </div>
-                <div class="team-info">
-                    <h3>${teamStats.name}</h3>
-                    <div class="team-record">${teamStats.record} (${teamStats.position})</div>
-                    <div class="team-streak">Streak: ${teamStats.streak} | Last 10: ${teamStats.lastTen || 'N/A'}</div>
-                    <div class="team-venue">
-                        <span>Home: ${teamStats.homeRecord || 'N/A'}</span>
-                        <span>Away: ${teamStats.awayRecord || 'N/A'}</span>
+                <div class="stat-card__body">
+                    <div class="stat">
+                        <span class="stat__label">Points/Game</span>
+                        <span class="stat__value">${formatStat(team.offense?.pointsPerGame)}</span>
+                        <div class="stat__progress" style="--value: ${(team.offense?.pointsPerGame || 0) / 1.5}%;"></div>
                     </div>
-                </div>
-            </div>
-            
-            <div class="stats-section">
-                <h4>Team Averages</h4>
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.pointsPerGame || '0.0'}</div>
-                        <div class="stat-label">Points</div>
+                    <div class="stat">
+                        <span class="stat__label">Field Goal %</span>
+                        <span class="stat__value">${formatStat(team.offense?.fieldGoalPercentage, true)}</span>
+                        <div class="stat__progress" style="--value: ${(team.offense?.fieldGoalPercentage || 0) * 100}%;"></div>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.pointsAllowed || '0.0'}</div>
-                        <div class="stat-label">Points Allowed</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.fieldGoalPercentage ? teamStats.fieldGoalPercentage + '%' : 'N/A'}</div>
-                        <div class="stat-label">FG%</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.threePointPercentage ? teamStats.threePointPercentage + '%' : 'N/A'}</div>
-                        <div class="stat-label">3P%</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.freeThrowPercentage ? teamStats.freeThrowPercentage + '%' : 'N/A'}</div>
-                        <div class="stat-label">FT%</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.rebounds || '0.0'}</div>
-                        <div class="stat-label">Rebounds</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.assists || '0.0'}</div>
-                        <div class="stat-label">Assists</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.steals || '0.0'}</div>
-                        <div class="stat-label">Steals</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.blocks || '0.0'}</div>
-                        <div class="stat-label">Blocks</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">${teamStats.turnovers || '0.0'}</div>
-                        <div class="stat-label">Turnovers</div>
+                    <div class="stat">
+                        <span class="stat__label">3-Point %</span>
+                        <span class="stat__value">${formatStat(team.offense?.threePointPercentage, true)}</span>
+                        <div class="stat__progress" style="--value: ${(team.offense?.threePointPercentage || 0) * 100}%;"></div>
                     </div>
                 </div>
             </div>
             
-            ${teamStats.players && teamStats.players.length > 0 ? `
-                <div class="player-stats">
-                    <h4>Key Players</h4>
-                    <div class="players-grid">
-                        ${teamStats.players.slice(0, 5).map(player => `
-                            <div class="player-card">
-                                <div class="player-name">${player.name}</div>
-                                <div class="player-position">${player.position}</div>
-                                <div class="player-stats">
-                                    <div class="stat">${player.points} <span>PTS</span></div>
-                                    <div class="stat">${player.rebounds} <span>REB</span></div>
-                                    <div class="stat">${player.assists} <span>AST</span></div>
-                                </div>
-                            </div>
-                        `).join('')}
+            <div class="stat-card card">
+                <div class="stat-card__header">
+                    <h3 class="stat-card__title">Defense</h3>
+                    <span class="stat-card__trend ${team.defenseTrend <= 0 ? 'up' : 'down'}">
+                        ${team.defenseTrend <= 0 ? '↓' : '↑'} ${Math.abs(team.defenseTrend || 0)}%
+                    </span>
+                </div>
+                <div class="stat-card__body">
+                    <div class="stat">
+                        <span class="stat__label">Points Allowed</span>
+                        <span class="stat__value">${formatStat(team.defense?.pointsAllowedPerGame)}</span>
+                        <div class="stat__progress" style="--value: ${100 - ((team.defense?.pointsAllowedPerGame || 0) / 1.5)}%;"></div>
+                    </div>
+                    <div class="stat">
+                        <span class="stat__label">Steals</span>
+                        <span class="stat__value">${formatStat(team.defense?.stealsPerGame)}</span>
+                        <div class="stat__progress" style="--value: ${(team.defense?.stealsPerGame || 0) * 10}%;"></div>
+                    </div>
+                    <div class="stat">
+                        <span class="stat__label">Blocks</span>
+                        <span class="stat__value">${formatStat(team.defense?.blocksPerGame)}</span>
+                        <div class="stat__progress" style="--value: ${(team.defense?.blocksPerGame || 0) * 20}%;"></div>
                     </div>
                 </div>
+            </div>
+            
+            ${!compact ? `
+            <div class="stat-card card chart-container">
+                <div class="stat-card__header">
+                    <h3 class="stat-card__title">Last 10 Games</h3>
+                    <div class="stat-card__tabs">
+                        <button class="tab-btn active" data-chart="points">Points</button>
+                        <button class="tab-btn" data-chart="assists">Assists</button>
+                        <button class="tab-btn" data-chart="rebounds">Rebounds</button>
+                    </div>
+                </div>
+                <div class="stat-card__body">
+                    <canvas id="team-stats-chart"></canvas>
+                </div>
+            </div>
+            
+            <div class="stat-card card">
+                <div class="stat-card__header">
+                    <h3 class="stat-card__title">Team Leaders</h3>
+                </div>
+                <div class="stat-card__body">
+                    ${['Points', 'Assists', 'Rebounds', 'Steals', 'Blocks'].map(stat => `
+                        <div class="leader">
+                            <span class="leader__stat">${stat}:</span>
+                            <span class="leader__name">${team.leaders?.[stat.toLowerCase()]?.name || 'N/A'}</span>
+                            <span class="leader__value">${team.leaders?.[stat.toLowerCase()]?.value || ''}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
             ` : ''}
         </div>
     `;
-}
+    
+    // Recent games section
+    const recentGames = !compact ? `
+        <div class="recent-games card">
+            <div class="card__header">
+                <h3>Recent Games</h3>
+                <a href="/schedule/${team.id}" class="btn btn-link">Full Schedule</a>
+            </div>
+            <div class="games-list">
+                ${team.recentGames?.length ? team.recentGames.map(game => `
+                    <div class="game-result ${game.won ? 'win' : 'loss'}">
+                        <span class="game-date">${new Date(game.date).toLocaleDateString()}</span>
+                        <span class="game-teams">
+                            <span class="team">
+                                <img src="${game.homeTeam.id === team.id ? game.homeTeam.logo : game.awayTeam.logo}" 
+                                     alt="${game.homeTeam.id === team.id ? game.homeTeam.name : game.awayTeam.name}" 
+                                     class="team-logo">
+                                <span class="team-name">${game.homeTeam.id === team.id ? 'vs' : '@'} ${game.homeTeam.id === team.id ? game.awayTeam.name : game.homeTeam.name}</span>
+                            </span>
+                        </span>
+                        <span class="game-score">
+                            <span class="score ${game.won ? 'winner' : ''}">${game.teamScore}</span>
+                            <span class="score-separator">-</span>
+                            <span class="score ${!game.won ? 'winner' : ''}">${game.opponentScore}</span>
+                        </span>
+                        <a href="/game/${game.id}" class="btn btn-sm btn-outline">Recap</a>
+                    </div>
+                `).join('') : '<p class="no-games">No recent games</p>'}
+            </div>
+        </div>
+    ` : '';
+    
+    // Upcoming games section
+    const upcomingGames = !compact && team.upcomingGames?.length ? `
+        <div class="upcoming-games card">
+            <div class="card__header">
+                <h3>Upcoming Games</h3>
+            </div>
+            <div class="games-list">
+                ${team.upcomingGames.slice(0, 3).map(game => `
+                    <div class="game-upcoming">
+                        <span class="game-date">${new Date(game.date).toLocaleDateString()}</span>
+                        <span class="game-teams">
+                            <span class="team">
+                                <img src="${game.opponent.logo}" 
+                                     alt="${game.opponent.name}" 
+                                     class="team-logo">
+                                <span class="team-name">${game.isHome ? 'vs' : '@'} ${game.opponent.name}</span>
+                            </span>
+                        </span>
+                        <span class="game-time">${new Date(game.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                        <button class="btn-notify" data-game-id="${game.id}" data-action="set-reminder">
+                            <i class="icon-bell"></i> Remind Me
+                        </button>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    ` : '';
 
-/**
- * Fetches player statistics
- * @param {string} playerId - The ID of the player to get stats for
- * @param {string} season - The season to get stats for (e.g., '2023')
- * @returns {Promise<Object>} - Player statistics
- */
-export async function fetchPlayerStats(playerId, season = '2023') {
-    try {
-        // In a real app, you would make an API call here
-        // For now, we'll return a mock player object
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Mock player data
-        const mockPlayers = {
-            'lebron': {
-                id: 'lebron',
-                name: 'LeBron James',
-                team: 'LAL',
-                position: 'SF',
-                number: 6,
-                height: '6\'9"',
-                weight: '250 lbs',
-                age: 38,
-                experience: '19th Season',
-                photo: 'https://via.placeholder.com/150/1e88e5/ffffff?text=LJ',
-                stats: {
-                    gamesPlayed: 56,
-                    points: 28.3,
-                    rebounds: 8.1,
-                    assists: 6.8,
-                    steals: 1.3,
-                    blocks: 0.6,
-                    fieldGoalPercentage: 52.1,
-                    threePointPercentage: 35.9,
-                    freeThrowPercentage: 75.6,
-                    minutes: 36.1,
-                    turnovers: 3.1,
-                    plusMinus: 5.2
-                },
-                lastFiveGames: [
-                    { points: 32, rebounds: 7, assists: 8, result: 'W' },
-                    { points: 25, rebounds: 9, assists: 5, result: 'W' },
-                    { points: 29, rebounds: 11, assists: 7, result: 'L' },
-                    { points: 34, rebounds: 6, assists: 9, result: 'W' },
-                    { points: 27, rebounds: 8, assists: 6, result: 'W' }
-                ]
-            },
-            // Add more players as needed
-        };
-        
-        return mockPlayers[playerId] || null;
-        
-    } catch (error) {
-        console.error('Error fetching player stats:', error);
-        showNotification(ERROR_MESSAGES.API_ERROR, 'error');
-        return null;
-    }
+    return `
+        <div class="team-stats">
+            <div class="team-header">
+                <h2>${team.name} ${watchButton}</h2>
+                ${team.record ? `<p class="team-record">${team.record.wins}-${team.record.losses} (${team.record.percentage ? (team.record.percentage * 100).toFixed(1) : '0.0'}%)</p>` : ''}
+            </div>
+            ${statsCards}
+            ${recentGames}
+        </div>
+    `;
 }
-
-// Export for testing
-export default {
-    fetchTeamStats,
-    displayTeamStats,
-    fetchPlayerStats,
-    createTeamStatsHTML
-};
